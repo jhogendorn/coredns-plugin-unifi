@@ -21,7 +21,7 @@ import (
 var log = clog.NewWithPlugin("unifi")
 
 type UnifiConfigEntry struct {
-	a				*[]net.IP
+	a				*net.IP
 	ttl			uint32
 }
 
