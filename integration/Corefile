@@ -1,0 +1,11 @@
+. {
+    unifi {
+        controllerurl http://mock-controller:8443
+        username test
+        password test
+        ttl 30
+        refreshinterval 5
+    }
+    log
+    errors
+}

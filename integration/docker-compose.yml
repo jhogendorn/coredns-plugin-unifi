@@ -1,0 +1,24 @@
+services:
+  mock-controller:
+    build:
+      context: ./mock-controller
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8443/status"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  coredns:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.coredns
+    ports:
+      - "1053:53/udp"
+      - "1053:53/tcp"
+    volumes:
+      - ./Corefile:/etc/coredns/Corefile:ro
+    depends_on:
+      mock-controller:
+        condition: service_healthy

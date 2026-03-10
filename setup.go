@@ -1,69 +1,92 @@
 package unifi
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 )
 
-// init registers this plugin.
 func init() { plugin.Register("unifi", setup) }
 
-// setup is the function that gets called when the config parser see the token "example". Setup is responsible
-// for parsing any extra options the example plugin may have. The first token this function sees is "example".
 func setup(c *caddy.Controller) error {
-	c.Next() // Ignore "example" and give us the next token.
+	c.Next() // Consume "unifi" token.
 
 	cfg := &UnifiConfig{
-		controllerUrl:			nil,
-		username:						nil,
-		password:						nil,
+		ttl:             defaultTTL,
+		refreshInterval: defaultRefreshInterval,
 	}
 
-	unifi := &Unifi{
-		Config: cfg
+	u := &Unifi{
+		Config:   cfg,
+		mappings: make(UnifiConfigEntryMap),
+		done:     make(chan struct{}),
 	}
 
-	for c.Next() {
-		for c.NextBlock() {
-			var value = c.Val()
+	for c.NextBlock() {
+		switch c.Val() {
+		case "controllerurl":
 			if !c.NextArg() {
-				return unifi, c.ArgErr()
+				return c.ArgErr()
 			}
-			switch value {
-				case "controllerurl":
-					cfg.controllerUrl = c.Val()
-				case "username":
-					cfg.username = c.Val()
-				case "password":
-					cfg.password = c.Val()
-				case "ttl":
-					cfg.ttl = c.Val()
-				case "refreshinterval":
-					cfg.refreshInterval = c.Val()
-				default:
-					return unifi, c.Err(":unknown property: '%s'", c.Val())
+			cfg.controllerUrl = c.Val()
+		case "username":
+			if !c.NextArg() {
+				return c.ArgErr()
 			}
+			cfg.username = c.Val()
+		case "password":
+			if !c.NextArg() {
+				return c.ArgErr()
+			}
+			cfg.password = c.Val()
+		case "ttl":
+			if !c.NextArg() {
+				return c.ArgErr()
+			}
+			val, err := strconv.ParseUint(c.Val(), 10, 32)
+			if err != nil {
+				return fmt.Errorf("invalid ttl value: %s", c.Val())
+			}
+			cfg.ttl = uint32(val)
+		case "refreshinterval":
+			if !c.NextArg() {
+				return c.ArgErr()
+			}
+			val, err := strconv.ParseUint(c.Val(), 10, 32)
+			if err != nil {
+				return fmt.Errorf("invalid refreshinterval value: %s", c.Val())
+			}
+			cfg.refreshInterval = uint32(val)
+		case "fallthrough":
+			u.fall.SetZonesFromArgs(c.RemainingArgs())
+		default:
+			return c.Errf("unknown property: '%s'", c.Val())
 		}
 	}
 
 	unifiClient, err := NewUnifiClient(cfg)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	unifi.client = unifiClient
-	unifi.mappings = &make(UnifiConfigEntryMap)
+	u.Client = unifiClient
 
 	log.Infof("Unifi Controller: %s", cfg.controllerUrl)
 
-	go unifi.start()
+	go u.start()
 
-	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
-	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return Unifi{Next: next}
+	c.OnShutdown(func() error {
+		close(u.done)
+		return nil
 	})
 
-	// All OK, return a nil error.
+	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
+		u.Next = next
+		return u
+	})
+
 	return nil
 }
