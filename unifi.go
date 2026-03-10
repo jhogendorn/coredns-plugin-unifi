@@ -3,6 +3,7 @@ package unifi
 import (
 	"context"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -43,11 +44,11 @@ type Unifi struct {
 	Config *UnifiConfig
 	Client *UnifiClient
 
-	mappings UnifiConfigEntryMap
-	ready    bool
-	mutex    sync.RWMutex
-	fall     fall.F
-	done     chan struct{}
+	mappings       UnifiConfigEntryMap
+	seenSanitized  map[string]bool // tracks raw->sanitized mappings we've already logged
+	mutex          sync.RWMutex
+	fall           fall.F
+	done           chan struct{}
 }
 
 func (u *Unifi) Name() string { return "unifi" }
@@ -93,7 +94,9 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		m.Rcode = dns.RcodeNameError
 	}
 
-	w.WriteMsg(m)
+	if err := w.WriteMsg(m); err != nil {
+		return dns.RcodeServerFailure, err
+	}
 	return dns.RcodeSuccess, nil
 }
 
@@ -135,13 +138,28 @@ func (u *Unifi) getEntry(host string) *UnifiConfigEntry {
 	return value
 }
 
+var separatorPattern = regexp.MustCompile(`[\s_-]+`)
+var invalidCharsPattern = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizeHostname converts a raw name into a DNS-safe hostname label,
+// matching UniFi's internal sanitization behavior.
+func sanitizeHostname(name string) string {
+	name = strings.ToLower(name)
+	name = separatorPattern.ReplaceAllString(name, "-")
+	name = invalidCharsPattern.ReplaceAllString(name, "")
+	name = strings.Trim(name, "-")
+	return name
+}
+
 // clientName returns the best available name for a client,
-// preferring Name (UI alias) over Hostname (DHCP-reported).
+// preferring Name (UI alias) over Hostname (DHCP-reported),
+// and sanitizes the result for use as a DNS hostname label.
 func clientName(name, hostname string) string {
-	if name != "" {
-		return name
+	raw := name
+	if raw == "" {
+		raw = hostname
 	}
-	return hostname
+	return sanitizeHostname(raw)
 }
 
 func (u *Unifi) refresh(first bool) error {
@@ -174,22 +192,51 @@ func (u *Unifi) refresh(first bool) error {
 		domains[network.ID] = network.DomainName
 	}
 
+	if u.seenSanitized == nil {
+		u.seenSanitized = make(map[string]bool)
+	}
+
 	keepClients := map[string]bool{}
 	for _, client := range clients {
 		name := clientName(client.Name, client.Hostname)
 		if name == "" {
+			log.Warningf("Skipping client %s (MAC %s): no usable name or hostname", client.IP, client.Mac)
 			continue
 		}
 
 		domain := domains[client.NetworkID]
 		if domain == "" {
+			log.Warningf("Skipping client %q (%s): network %s has no domain name", name, client.IP, client.NetworkID)
 			continue
 		}
 
 		record := name + "." + domain
 
+		if existing, ok := u.mappings[record]; ok && keepClients[record] {
+			log.Errorf("Hostname collision: %s already mapped to %s, ignoring duplicate %s", record, existing.a, client.IP)
+			continue
+		}
+
+		ip := net.ParseIP(client.IP)
+
+		// Log sanitization on first occurrence only
+		raw := client.Name
+		if raw == "" {
+			raw = client.Hostname
+		}
+		if raw != name && !u.seenSanitized[raw] {
+			log.Infof("Sanitized %q -> %q", raw, name)
+			u.seenSanitized[raw] = true
+		}
+
+		// Log new or changed mappings
+		existing := u.mappings[record]
+		if existing == nil || !existing.a.Equal(ip) {
+			log.Debugf("Mapped %s -> %s", record, client.IP)
+		}
+
 		u.mappings[record] = &UnifiConfigEntry{
-			a:   net.ParseIP(client.IP),
+			a:   ip,
 			ttl: u.Config.ttl,
 		}
 		keepClients[record] = true

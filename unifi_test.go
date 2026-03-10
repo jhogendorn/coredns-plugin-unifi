@@ -93,7 +93,7 @@ func TestServeDNSNonARecord(t *testing.T) {
 	rec := dnstest.NewRecorder(&test.ResponseWriter{})
 
 	// Non-A queries should pass through to Next handler
-	u.ServeDNS(ctx, rec, r)
+	_, _ = u.ServeDNS(ctx, rec, r)
 }
 
 func TestGetEntry(t *testing.T) {
@@ -136,9 +136,10 @@ func TestReady(t *testing.T) {
 
 func newTestUnifi(mock *mockUnifiAPI) *Unifi {
 	return &Unifi{
-		Config: &UnifiConfig{ttl: 30},
-		Client: &UnifiClient{api: mock},
-		mappings: make(UnifiConfigEntryMap),
+		Config:        &UnifiConfig{ttl: 30},
+		Client:        &UnifiClient{api: mock},
+		mappings:      make(UnifiConfigEntryMap),
+		seenSanitized: make(map[string]bool),
 	}
 }
 
@@ -193,7 +194,7 @@ func TestRefreshRemovesStaleEntries(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	// Second refresh — laptop is gone
 	mock.clients = []*unpoller_unifi.Client{
@@ -226,7 +227,7 @@ func TestRefreshMultipleNetworks(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if u.mappings["server.corp.local"] == nil {
 		t.Fatal("Expected mapping for server.corp.local")
@@ -287,7 +288,7 @@ func TestRefreshFallsBackToHostname(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if u.mappings["dhcp-reported.home.lan"] == nil {
 		t.Fatal("Expected mapping using Hostname fallback")
@@ -306,7 +307,7 @@ func TestRefreshNameTakesPrecedenceOverHostname(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if u.mappings["my-alias.home.lan"] == nil {
 		t.Fatal("Expected mapping using Name over Hostname")
@@ -329,7 +330,7 @@ func TestRefreshSkipsClientWithNoName(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if len(u.mappings) != 1 {
 		t.Fatalf("Expected 1 mapping (nameless client skipped), got %d", len(u.mappings))
@@ -349,7 +350,7 @@ func TestRefreshSkipsClientWithUnknownNetwork(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if len(u.mappings) != 1 {
 		t.Fatalf("Expected 1 mapping (unknown network skipped), got %d", len(u.mappings))
@@ -371,10 +372,35 @@ func TestRefreshSkipsNetworkWithEmptyDomain(t *testing.T) {
 	}
 
 	u := newTestUnifi(mock)
-	u.refresh(true)
+	_ = u.refresh(true)
 
 	if len(u.mappings) != 0 {
 		t.Fatalf("Expected 0 mappings (empty domain), got %d", len(u.mappings))
+	}
+}
+
+func TestSanitizeHostname(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"desktop", "desktop"},
+		{"My Desktop", "my-desktop"},
+		{"Living  Room  TV", "living-room-tv"},
+		{"my_server_01", "my-server-01"},
+		{"--leading-trailing--", "leading-trailing"},
+		{"café", "caf"},
+		{"hello!@#world", "helloworld"},
+		{"  spaced  ", "spaced"},
+		{"UPPERCASE", "uppercase"},
+		{"mixed--Case__Name", "mixed-case-name"},
+		{"", ""},
+		{"---", ""},
+	}
+	for _, tt := range tests {
+		got := sanitizeHostname(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeHostname(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -386,12 +412,116 @@ func TestClientName(t *testing.T) {
 		{"", "dhcp-host", "dhcp-host"},
 		{"alias", "", "alias"},
 		{"", "", ""},
+		{"My Device", "dhcp-host", "my-device"},
+		{"", "BAD HOST!", "bad-host"},
 	}
 	for _, tt := range tests {
 		got := clientName(tt.name, tt.hostname)
 		if got != tt.want {
 			t.Errorf("clientName(%q, %q) = %q, want %q", tt.name, tt.hostname, got, tt.want)
 		}
+	}
+}
+
+func TestRefreshSanitizesClientNames(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "Living Room TV", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "", Hostname: "BAD HOST!", IP: "192.168.1.11", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	_ = u.refresh(true)
+
+	if u.mappings["living-room-tv.home.lan"] == nil {
+		t.Fatal("Expected sanitized mapping for 'Living Room TV'")
+	}
+	if u.mappings["bad-host.home.lan"] == nil {
+		t.Fatal("Expected sanitized mapping for 'BAD HOST!'")
+	}
+	if len(u.mappings) != 2 {
+		t.Fatalf("Expected 2 mappings, got %d", len(u.mappings))
+	}
+}
+
+func TestRefreshCollisionKeepsFirst(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "printer", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "printer", IP: "192.168.1.20", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	_ = u.refresh(true)
+
+	if len(u.mappings) != 1 {
+		t.Fatalf("Expected 1 mapping (collision), got %d", len(u.mappings))
+	}
+
+	entry := u.mappings["printer.home.lan"]
+	if entry == nil {
+		t.Fatal("Expected mapping for printer.home.lan")
+	}
+	if !entry.a.Equal(net.ParseIP("192.168.1.10")) {
+		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.a)
+	}
+}
+
+func TestRefreshCollisionViaSanitization(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "My Printer", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "my_printer", IP: "192.168.1.20", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	_ = u.refresh(true)
+
+	if len(u.mappings) != 1 {
+		t.Fatalf("Expected 1 mapping (sanitization collision), got %d", len(u.mappings))
+	}
+
+	entry := u.mappings["my-printer.home.lan"]
+	if entry == nil {
+		t.Fatal("Expected mapping for my-printer.home.lan")
+	}
+	if !entry.a.Equal(net.ParseIP("192.168.1.10")) {
+		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.a)
+	}
+}
+
+func TestRefreshSkipsAllInvalidNames(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "---", Hostname: "!!!", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "", Hostname: "", IP: "192.168.1.11", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	_ = u.refresh(true)
+
+	if len(u.mappings) != 0 {
+		t.Fatalf("Expected 0 mappings (all names invalid), got %d", len(u.mappings))
 	}
 }
 
