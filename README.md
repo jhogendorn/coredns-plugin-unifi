@@ -15,22 +15,23 @@ The Unifi system will do odd things with regards to the dnsmasq implementation, 
 It is similar to [USG Easy DNS](https://github.com/confirm/USG-Easy-DNS/) and was adapted originally from
 the [CoreDNS Traefik](https://github.com/scottt732/coredns-traefik/) Plugin.
 
+## How It Works
+
+The plugin periodically fetches all sites, clients, and networks from the UniFi controller. For each DHCP client, it builds a DNS A record by combining the client's name with its network's domain name (e.g. `desktop.home.lan`).
+
+When resolving a client's name, the plugin prefers the UI-assigned **Name** (alias) over the DHCP-reported **Hostname**. Clients with no name or hostname, or on networks with no domain name, are skipped.
+
 ## Compilation
 
-This package will always be compiled as part of CoreDNS and not in a standalone way. It will require you to use `go get` or as a dependency on [plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg).
-
-The [manual](https://coredns.io/manual/toc/#what-is-coredns) will have more information about how to configure and extend the server with external plugins.
-
-A simple way to consume this plugin, is by adding the following on [plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg), and recompile it as [detailed on coredns.io](https://coredns.io/2017/07/25/compile-time-enabling-or-disabling-plugins/#build-with-compile-time-configuration-file).
+This package is compiled as part of CoreDNS, not standalone. Add the following to CoreDNS's [plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg):
 
 ~~~
-example:github.com/coredns/example
 unifi:github.com/jhogendorn/coredns-unifi
 ~~~
 
 Put this early in the plugin list, so that *unifi* is executed before any of the other plugins.
 
-After this you can compile coredns by:
+Then compile CoreDNS as [detailed on coredns.io](https://coredns.io/2017/07/25/compile-time-enabling-or-disabling-plugins/#build-with-compile-time-configuration-file):
 
 ``` sh
 go generate
@@ -52,16 +53,24 @@ unifi {
   password mysecretpassword
   refreshInterval 30
   ttl 30
+  fallthrough
 }
 ~~~
+
+- **controllerurl** — URL of the UniFi controller API.
+- **username** — Username for controller authentication.
+- **password** — Password for controller authentication.
+- **refreshInterval** — How often (in seconds) to re-fetch clients from the controller. Default: `30`.
+- **ttl** — TTL (in seconds) for DNS responses. Default: `30`.
+- **fallthrough** — If present, pass unresolved queries to the next plugin.
 
 ## Metrics
 
 If monitoring is enabled (via the *prometheus* directive) the following metric is exported:
 
-* `coredns_example_request_count_total{server}` - query count to the *example* plugin.
+* `coredns_unifi_request_count_total{server}` - query count to the *unifi* plugin.
 
-The `server` label indicated which server handled the request, see the *metrics* plugin for details.
+The `server` label indicates which server handled the request, see the *metrics* plugin for details.
 
 ## Ready
 
