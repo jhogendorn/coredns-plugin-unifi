@@ -1,0 +1,23 @@
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache git
+
+# Clone CoreDNS and inject plugin — these layers are stable
+RUN git clone --depth 1 --branch v1.11.3 https://github.com/coredns/coredns.git /coredns
+WORKDIR /coredns
+RUN sed -i '/^forward:forward/a unifi:github.com/jhogendorn/coredns-unifi' plugin.cfg
+
+# Copy plugin module files first for dependency caching
+COPY go.mod go.sum /plugin/
+RUN go mod edit -replace github.com/jhogendorn/coredns-unifi=/plugin && \
+    go generate && \
+    go get github.com/jhogendorn/coredns-unifi && \
+    go mod download
+
+# Now copy plugin source and build
+COPY *.go /plugin/
+RUN go mod tidy && go build -o coredns .
+
+FROM alpine:3.20
+COPY --from=builder /coredns/coredns /usr/local/bin/coredns
+EXPOSE 53 53/udp
+CMD ["coredns", "-conf", "/etc/coredns/Corefile"]
