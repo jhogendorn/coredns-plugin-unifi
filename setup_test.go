@@ -7,12 +7,10 @@ import (
 )
 
 func TestSetupMinimal(t *testing.T) {
-	// Just the plugin name with no block — should succeed with empty config.
+	// Just the plugin name with no block — setup may fail because
+	// NewUnifiClient needs a controller URL. Either outcome is valid.
 	c := caddy.NewTestController("dns", `unifi`)
-	if err := setup(c); err == nil {
-		// Without a controller URL, NewUnifiClient will fail, which is expected.
-		// If it doesn't error, that's also fine — depends on unpoller behavior.
-	}
+	_ = setup(c)
 }
 
 func TestSetupUnknownDirective(t *testing.T) {
