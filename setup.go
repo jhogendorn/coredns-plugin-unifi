@@ -13,6 +13,7 @@ func init() { plugin.Register("unifi", setup) }
 
 func setup(c *caddy.Controller) error {
 	c.Next() // Consume "unifi" token.
+	origins := plugin.OriginsFromArgsOrServerBlock(c.RemainingArgs(), c.ServerBlockKeys)
 
 	cfg := &UnifiConfig{
 		ttl:             defaultTTL,
@@ -21,6 +22,7 @@ func setup(c *caddy.Controller) error {
 
 	u := &Unifi{
 		Config:   cfg,
+		Origins:  origins,
 		mappings: make(UnifiConfigEntryMap),
 		done:     make(chan struct{}),
 	}

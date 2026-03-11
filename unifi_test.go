@@ -6,6 +6,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/pkg/dnstest"
 	"github.com/coredns/coredns/plugin/test"
 
@@ -19,6 +20,7 @@ func TestServeDNSHit(t *testing.T) {
 		Config: &UnifiConfig{
 			ttl: 30,
 		},
+		Origins: []string{"lan."},
 		mappings: UnifiConfigEntryMap{
 			"myhost.lan": {
 				a:   net.ParseIP("192.168.1.100"),
@@ -58,6 +60,7 @@ func TestServeDNSMiss(t *testing.T) {
 		Config: &UnifiConfig{
 			ttl: 30,
 		},
+		Origins:  []string{"lan."},
 		mappings: make(UnifiConfigEntryMap),
 	}
 
@@ -84,6 +87,7 @@ func TestServeDNSNonARecord(t *testing.T) {
 		Config: &UnifiConfig{
 			ttl: 30,
 		},
+		Origins:  []string{"lan."},
 		mappings: make(UnifiConfigEntryMap),
 	}
 
@@ -548,4 +552,73 @@ func TestStartShutdown(t *testing.T) {
 	<-started
 	close(u.done)
 	// If start() doesn't return, the test will timeout and fail.
+}
+
+func TestServeDNSZoneMatch(t *testing.T) {
+	u := &Unifi{
+		Next: test.ErrorHandler(),
+		Config: &UnifiConfig{
+			ttl: 30,
+		},
+		Origins: []string{"lan."},
+		mappings: UnifiConfigEntryMap{
+			"myhost.lan": {
+				a:   net.ParseIP("192.168.1.100"),
+				ttl: 30,
+			},
+		},
+	}
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("myhost.lan.", dns.TypeA)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	code, err := u.ServeDNS(ctx, rec, r)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if code != dns.RcodeSuccess {
+		t.Fatalf("Expected rcode %d, got %d", dns.RcodeSuccess, code)
+	}
+	if len(rec.Msg.Answer) != 1 {
+		t.Fatalf("Expected 1 answer for zone-matched query, got %d", len(rec.Msg.Answer))
+	}
+}
+
+func TestServeDNSZoneNoMatch(t *testing.T) {
+	// nextHandler records whether it was called
+	called := false
+	nextHandler := plugin.HandlerFunc(func(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+		called = true
+		return dns.RcodeSuccess, nil
+	})
+
+	u := &Unifi{
+		Next: nextHandler,
+		Config: &UnifiConfig{
+			ttl: 30,
+		},
+		Origins: []string{"lan."},
+		mappings: UnifiConfigEntryMap{
+			"myhost.lan": {
+				a:   net.ParseIP("192.168.1.100"),
+				ttl: 30,
+			},
+		},
+	}
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	// Query for a zone not in Origins — should fall through to Next
+	r.SetQuestion("myhost.example.com.", dns.TypeA)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	_, err := u.ServeDNS(ctx, rec, r)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if !called {
+		t.Fatal("Expected Next handler to be called for non-matching zone, but it was not")
+	}
 }

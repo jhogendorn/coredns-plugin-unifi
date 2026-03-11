@@ -40,15 +40,16 @@ type UnifiConfig struct {
 }
 
 type Unifi struct {
-	Next   plugin.Handler
-	Config *UnifiConfig
-	Client *UnifiClient
+	Next    plugin.Handler
+	Config  *UnifiConfig
+	Client  *UnifiClient
+	Origins []string
 
-	mappings       UnifiConfigEntryMap
-	seenSanitized  map[string]bool // tracks raw->sanitized mappings we've already logged
-	mutex          sync.RWMutex
-	fall           fall.F
-	done           chan struct{}
+	mappings      UnifiConfigEntryMap
+	seenSanitized map[string]bool // tracks raw->sanitized mappings we've already logged
+	mutex         sync.RWMutex
+	fall          fall.F
+	done          chan struct{}
 }
 
 func (u *Unifi) Name() string { return "unifi" }
@@ -58,6 +59,12 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	state := request.Request{W: w, Req: r}
 
 	if state.QClass() != dns.ClassINET || state.QType() != dns.TypeA {
+		return plugin.NextOrFailure(u.Name(), u.Next, ctx, w, r)
+	}
+
+	qname := state.QName()
+	zone := plugin.Zones(u.Origins).Matches(qname)
+	if zone == "" {
 		return plugin.NextOrFailure(u.Name(), u.Next, ctx, w, r)
 	}
 
@@ -76,7 +83,6 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		}
 	}
 
-	qname := state.QName()
 	if len(answers) == 0 {
 		if u.fall.Through(qname) && u.Next != nil {
 			log.Debug("Falling through. 0 answers")
