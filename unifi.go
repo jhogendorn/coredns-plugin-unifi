@@ -15,6 +15,7 @@ import (
 	"github.com/coredns/coredns/request"
 
 	"github.com/miekg/dns"
+	unpoller_unifi "github.com/unpoller/unifi"
 )
 
 const (
@@ -37,6 +38,7 @@ type UnifiConfig struct {
 	password        string
 	ttl             uint32
 	refreshInterval uint32
+	sites           []string
 }
 
 type Unifi struct {
@@ -181,7 +183,18 @@ func (u *Unifi) refresh(first bool) error {
 		return err
 	}
 
-	// @TODO some way to filter/limit the list of sites.
+	if len(u.Config.sites) > 0 {
+		filtered := make([]*unpoller_unifi.Site, 0, len(sites))
+		for _, site := range sites {
+			for _, allowed := range u.Config.sites {
+				if site.Name == allowed {
+					filtered = append(filtered, site)
+					break
+				}
+			}
+		}
+		sites = filtered
+	}
 
 	clients, err := u.Client.api.GetClients(sites)
 	if err != nil {

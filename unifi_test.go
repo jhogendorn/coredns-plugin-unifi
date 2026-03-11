@@ -529,6 +529,107 @@ func TestRefreshSkipsAllInvalidNames(t *testing.T) {
 	}
 }
 
+func TestRefreshSiteFilterSingle(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{
+			{Name: "default"},
+			{Name: "branch"},
+		},
+		clients: []*unpoller_unifi.Client{
+			{Name: "desktop", IP: "192.168.1.10", NetworkID: "net1", SiteID: "default"},
+			{Name: "laptop", IP: "192.168.1.11", NetworkID: "net1", SiteID: "branch"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	u.Config.sites = []string{"default"}
+	if err := u.refresh(true); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+
+	if len(u.mappings) != 1 {
+		t.Fatalf("Expected 1 mapping (only default site), got %d", len(u.mappings))
+	}
+	if u.mappings["desktop.home.lan"] == nil {
+		t.Fatal("Expected mapping for desktop.home.lan (default site)")
+	}
+	if u.mappings["laptop.home.lan"] != nil {
+		t.Fatal("Expected laptop.home.lan to be excluded (branch site filtered out)")
+	}
+}
+
+func TestRefreshSiteFilterMultiple(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{
+			{Name: "site1"},
+			{Name: "site2"},
+			{Name: "site3"},
+		},
+		clients: []*unpoller_unifi.Client{
+			{Name: "host1", IP: "10.0.1.1", NetworkID: "net1", SiteID: "site1"},
+			{Name: "host2", IP: "10.0.2.1", NetworkID: "net1", SiteID: "site2"},
+			{Name: "host3", IP: "10.0.3.1", NetworkID: "net1", SiteID: "site3"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	u.Config.sites = []string{"site1", "site2"}
+	if err := u.refresh(true); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+
+	if len(u.mappings) != 2 {
+		t.Fatalf("Expected 2 mappings (site1 and site2), got %d", len(u.mappings))
+	}
+	if u.mappings["host1.home.lan"] == nil {
+		t.Fatal("Expected mapping for host1.home.lan (site1)")
+	}
+	if u.mappings["host2.home.lan"] == nil {
+		t.Fatal("Expected mapping for host2.home.lan (site2)")
+	}
+	if u.mappings["host3.home.lan"] != nil {
+		t.Fatal("Expected host3.home.lan to be excluded (site3 filtered out)")
+	}
+}
+
+func TestRefreshSiteFilterNone(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{
+			{Name: "site1"},
+			{Name: "site2"},
+		},
+		clients: []*unpoller_unifi.Client{
+			{Name: "host1", IP: "10.0.1.1", NetworkID: "net1", SiteID: "site1"},
+			{Name: "host2", IP: "10.0.2.1", NetworkID: "net1", SiteID: "site2"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	// No sites configured — all sites should be included.
+	if err := u.refresh(true); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+
+	if len(u.mappings) != 2 {
+		t.Fatalf("Expected 2 mappings (no site filter), got %d", len(u.mappings))
+	}
+	if u.mappings["host1.home.lan"] == nil {
+		t.Fatal("Expected mapping for host1.home.lan")
+	}
+	if u.mappings["host2.home.lan"] == nil {
+		t.Fatal("Expected mapping for host2.home.lan")
+	}
+}
+
 func TestStartShutdown(t *testing.T) {
 	mock := &mockUnifiAPI{
 		sites:    []*unpoller_unifi.Site{{Name: "default"}},

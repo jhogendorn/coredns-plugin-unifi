@@ -3,6 +3,7 @@ package unifi
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
@@ -62,6 +63,15 @@ func setup(c *caddy.Controller) error {
 				return fmt.Errorf("invalid refreshinterval value: %s", c.Val())
 			}
 			cfg.refreshInterval = uint32(val)
+		case "sites":
+			if !c.NextArg() {
+				return c.ArgErr()
+			}
+			parts := strings.Split(c.Val(), ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			cfg.sites = parts
 		case "fallthrough":
 			u.fall.SetZonesFromArgs(c.RemainingArgs())
 		default:
