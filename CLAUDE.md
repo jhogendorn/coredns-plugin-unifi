@@ -20,26 +20,30 @@ go test ./...
 go test -run TestSetup   # single test
 ```
 
-Go version: 1.22.4 (see `.tool-versions`)
+Integration tests require Docker:
+```sh
+go test -tags integration -v -timeout 180s .
+```
+
+Linting:
+```sh
+golangci-lint run ./...
+```
+
+Go version: 1.24.9 (see `mise.toml`)
 
 ## Architecture
 
 The plugin follows the standard CoreDNS plugin pattern:
 
 - **setup.go** — Plugin registration (`init()`) and Corefile config parsing. Parses block directives (`controllerurl`, `username`, `password`, `ttl`, `refreshinterval`) and starts the background refresh goroutine.
-- **unifi.go** — Core plugin logic. `ServeDNS()` handles A record lookups against an in-memory map (`UnifiConfigEntryMap`). `refresh()` periodically fetches sites/clients/networks from the UniFi controller and rebuilds the hostname→IP mapping using `client.Name + "." + domain`. Protected by `sync.RWMutex`.
-- **client.go** — Wraps `unpoller/unifi` to create the controller API client. `NewUnifiClient()` initializes the connection.
+- **unifi.go** — Core plugin logic. `ServeDNS()` handles A record lookups against an in-memory map (`UnifiConfigEntryMap`). `refresh()` periodically fetches sites/clients/networks from the UniFi controller and rebuilds the hostname→IP mapping. Client names are sanitized via `sanitizeHostname()` (lowercase, replace spaces/underscores with hyphens, strip invalid chars). Prefers UI alias (`Name`) over DHCP-reported `Hostname`. Protected by `sync.RWMutex`. Detects hostname collisions and logs skipped clients.
+- **client.go** — Wraps `unpoller/unifi` to create the controller API client via `UnifiAPI` interface. `NewUnifiClient()` initializes the connection.
 - **ready.go** — Implements CoreDNS readiness interface (currently always returns true).
 - **metrics.go** — Prometheus counter `coredns_unifi_request_count_total` for query tracking.
-
-## Current State
-
-The code is early-stage and does not compile yet (per commit history). Known issues include:
-- Leftover "example" plugin references in comments, types (`Example`), and tests
-- Type mismatches (e.g., `*net.IP` vs `net.IP`, string assignments to pointer fields)
-- Missing imports (`sync`, `time`, `request` package)
-- Tests are still the example plugin template tests, not adapted for unifi
-- Several TODOs: site filtering, device interrogation, zone filtering in ServeDNS
+- **mock_test.go** — `mockUnifiAPI` implementing `UnifiAPI` interface for unit tests.
+- **integration_test.go** — Testcontainers-go integration tests (build tag: `integration`).
+- **integration/** — Docker compose, Dockerfiles, mock controller, Corefile for integration tests.
 
 ## Corefile Configuration
 
