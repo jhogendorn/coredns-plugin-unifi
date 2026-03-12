@@ -17,9 +17,11 @@ the [CoreDNS Traefik](https://github.com/scottt732/coredns-traefik/) Plugin.
 
 ## How It Works
 
-The plugin periodically fetches all sites, clients, and networks from the UniFi controller. For each DHCP client, it builds a DNS A record by combining the client's name with its network's domain name (e.g. `desktop.home.lan`).
+The plugin periodically fetches sites, clients, and networks from the UniFi controller. For each DHCP client, it builds a DNS A record by combining the client's name with its network's domain name (e.g. `desktop.home.lan`).
 
-When resolving a client's name, the plugin prefers the UI-assigned **Name** (alias) over the DHCP-reported **Hostname**. Clients with no name or hostname, or on networks with no domain name, are skipped.
+Client names are sanitized to be DNS-safe: lowercased, spaces and underscores replaced with hyphens, invalid characters stripped. The plugin prefers the UI-assigned **Name** (alias) over the DHCP-reported **Hostname**. Clients with no name or hostname, or on networks with no domain name, are skipped. Hostname collisions (two clients mapping to the same record) are detected and logged.
+
+The plugin respects CoreDNS zone boundaries — it only answers queries that fall within the zones configured in the server block.
 
 ## Compilation
 
@@ -53,6 +55,7 @@ unifi {
   password mysecretpassword
   refreshInterval 30
   ttl 30
+  sites default,branch-office
   fallthrough
 }
 ~~~
@@ -62,6 +65,7 @@ unifi {
 - **password** — Password for controller authentication.
 - **refreshInterval** — How often (in seconds) to re-fetch clients from the controller. Default: `30`.
 - **ttl** — TTL (in seconds) for DNS responses. Default: `30`.
+- **sites** — Comma-separated list of UniFi site names to query. If omitted, all sites are queried.
 - **fallthrough** — If present, pass unresolved queries to the next plugin.
 
 ## Metrics

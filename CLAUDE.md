@@ -36,8 +36,8 @@ Go version: 1.24.9 (see `mise.toml`)
 
 The plugin follows the standard CoreDNS plugin pattern:
 
-- **setup.go** — Plugin registration (`init()`) and Corefile config parsing. Parses block directives (`controllerurl`, `username`, `password`, `ttl`, `refreshinterval`) and starts the background refresh goroutine.
-- **unifi.go** — Core plugin logic. `ServeDNS()` handles A record lookups against an in-memory map (`UnifiConfigEntryMap`). `refresh()` periodically fetches sites/clients/networks from the UniFi controller and rebuilds the hostname→IP mapping. Client names are sanitized via `sanitizeHostname()` (lowercase, replace spaces/underscores with hyphens, strip invalid chars). Prefers UI alias (`Name`) over DHCP-reported `Hostname`. Protected by `sync.RWMutex`. Detects hostname collisions and logs skipped clients.
+- **setup.go** — Plugin registration (`init()`) and Corefile config parsing. Parses block directives (`controllerurl`, `username`, `password`, `ttl`, `refreshinterval`, `sites`, `fallthrough`). Captures zone origins from the server block via `plugin.OriginsFromArgsOrServerBlock`. Starts the background refresh goroutine.
+- **unifi.go** — Core plugin logic. `ServeDNS()` filters queries by zone (`Origins`) then handles A record lookups against an in-memory map (`UnifiConfigEntryMap`). `refresh()` periodically fetches sites/clients/networks from the UniFi controller, optionally filters sites by the `sites` directive, and rebuilds the hostname→IP mapping. Client names are sanitized via `sanitizeHostname()` (lowercase, replace spaces/underscores with hyphens, strip invalid chars). Prefers UI alias (`Name`) over DHCP-reported `Hostname`. Protected by `sync.RWMutex`. Detects hostname collisions and logs skipped clients.
 - **client.go** — Wraps `unpoller/unifi` to create the controller API client via `UnifiAPI` interface. `NewUnifiClient()` initializes the connection.
 - **ready.go** — Implements CoreDNS readiness interface (currently always returns true).
 - **metrics.go** — Prometheus counter `coredns_unifi_request_count_total` for query tracking.
@@ -54,6 +54,7 @@ unifi {
   password mysecretpassword
   refreshInterval 30
   ttl 30
+  sites default,branch-office
   fallthrough
 }
 ```
