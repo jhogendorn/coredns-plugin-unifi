@@ -1,4 +1,4 @@
-module github.com/jhogendorn/coredns-unifi
+module github.com/jhogendorn/coredns-plugin-unifi
 
 go 1.24.9
 

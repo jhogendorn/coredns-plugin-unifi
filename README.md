@@ -28,7 +28,7 @@ The plugin respects CoreDNS zone boundaries — it only answers queries that fal
 This package is compiled as part of CoreDNS, not standalone. Add the following to CoreDNS's [plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg):
 
 ~~~
-unifi:github.com/jhogendorn/coredns-unifi
+unifi:github.com/jhogendorn/coredns-plugin-unifi
 ~~~
 
 Put this early in the plugin list, so that *unifi* is executed before any of the other plugins.

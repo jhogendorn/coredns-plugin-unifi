@@ -10,7 +10,7 @@ CoreDNS plugin (`unifi`) that queries a UniFi Controller for DHCP clients and re
 
 This plugin is compiled into CoreDNS, not independently. To build:
 
-1. Add `unifi:github.com/jhogendorn/coredns-unifi` to CoreDNS's `plugin.cfg`
+1. Add `unifi:github.com/jhogendorn/coredns-plugin-unifi` to CoreDNS's `plugin.cfg`
 2. Run `go generate && go build` in the CoreDNS source directory
 
 For local development (syntax checking, tests):
