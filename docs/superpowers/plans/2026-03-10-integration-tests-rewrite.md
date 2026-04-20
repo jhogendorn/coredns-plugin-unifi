@@ -1,6 +1,6 @@
 # Integration Tests Rewrite — Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace the shell-script integration tests with Go tests using testcontainers-go and the miekg/dns client, using unpoller types for the mock controller.
 
@@ -33,7 +33,7 @@
 **Files:**
 - Create: `integration/mock-controller/go.mod`
 
-- [ ] **Step 1: Initialize the Go module with unpoller dependency**
+- [x] **Step 1: Initialize the Go module with unpoller dependency**
 
 ```
 cd integration/mock-controller
@@ -42,7 +42,7 @@ go get github.com/unpoller/unifi@v0.4.3
 go mod tidy
 ```
 
-- [ ] **Step 2: Verify module resolves**
+- [x] **Step 2: Verify module resolves**
 
 Run: `cd integration/mock-controller && go vet ./...`
 Expected: No errors (after Task 2 completes — just create the module file for now)
@@ -62,7 +62,7 @@ Expected: No errors (after Task 2 completes — just create the module file for 
 
 **Important API detail:** The `/status` endpoint returns `{"meta": {...}}` (not `{"data": {...}}`). The `GetServerData()` method in unpoller unmarshals with `json:"meta"`. All other endpoints use `{"data": [...]}`.
 
-- [ ] **Step 1: Write the new main.go**
+- [x] **Step 1: Write the new main.go**
 
 The file must:
 1. Import `github.com/unpoller/unifi`
@@ -82,12 +82,12 @@ The file must:
    - net1: Name="LAN", DomainName="home.lan"
    - net2: Name="IoT", DomainName="iot.lan"
 
-- [ ] **Step 2: Run go mod tidy and verify compilation**
+- [x] **Step 2: Run go mod tidy and verify compilation**
 
 Run: `cd integration/mock-controller && go mod tidy && go vet ./...`
 Expected: Clean output, no errors
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add integration/mock-controller/
@@ -101,7 +101,7 @@ git commit -m "refactor: rewrite mock controller with unpoller types and API con
 **Files:**
 - Rewrite: `integration/mock-controller/Dockerfile`
 
-- [ ] **Step 1: Write optimized Dockerfile**
+- [x] **Step 1: Write optimized Dockerfile**
 
 ```dockerfile
 FROM golang:1.22-alpine AS builder
@@ -121,7 +121,7 @@ Key optimizations:
 - `go.mod`/`go.sum` copied and downloaded before source — deps layer is cached across source changes
 - `CGO_ENABLED=0` for static binary
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add integration/mock-controller/Dockerfile
@@ -135,7 +135,7 @@ git commit -m "build: optimize mock-controller Dockerfile for layer caching"
 **Files:**
 - Rewrite: `integration/Dockerfile.coredns`
 
-- [ ] **Step 1: Write optimized Dockerfile**
+- [x] **Step 1: Write optimized Dockerfile**
 
 ```dockerfile
 FROM golang:1.22-alpine AS builder
@@ -169,12 +169,12 @@ Key optimizations:
 - Plugin `*.go` source copied last — only the final build step re-runs on source changes
 - Removed `make` from apk (not used)
 
-- [ ] **Step 2: Test the build**
+- [x] **Step 2: Test the build**
 
 Run: `cd integration && docker compose build`
 Expected: Both containers build successfully
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add integration/Dockerfile.coredns
@@ -190,7 +190,7 @@ git commit -m "build: optimize CoreDNS Dockerfile for layer caching"
 **Files:**
 - Modify: `go.mod`
 
-- [ ] **Step 1: Add testcontainers-go and compose module**
+- [x] **Step 1: Add testcontainers-go and compose module**
 
 ```bash
 go get github.com/testcontainers/testcontainers-go@latest
@@ -198,12 +198,12 @@ go get github.com/testcontainers/testcontainers-go/modules/compose@latest
 go mod tidy
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 Run: `go vet ./...`
 Expected: No errors
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add go.mod go.sum
@@ -219,7 +219,7 @@ git commit -m "deps: add testcontainers-go for integration tests"
 
 **Context:** This file uses build tag `//go:build integration` so it only runs when explicitly requested. It uses testcontainers-go compose module to start the Docker stack and miekg/dns to make queries.
 
-- [ ] **Step 1: Write integration_test.go**
+- [x] **Step 1: Write integration_test.go**
 
 The file must:
 1. Use `//go:build integration` build tag
@@ -261,12 +261,12 @@ Then get the coredns mapped port via `stack.ServiceContainer(ctx, "coredns")` �
 
 Store `dnsAddr` as a package-level var set in `TestMain`.
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `go vet -tags integration ./...`
 Expected: No errors
 
-- [ ] **Step 3: Run the integration tests**
+- [x] **Step 3: Run the integration tests**
 
 Run: `go test -tags integration -v -timeout 120s -run TestNamedClientResolves .`
 Expected: PASS
@@ -275,12 +275,12 @@ Then run all:
 Run: `go test -tags integration -v -timeout 120s .`
 Expected: All 6 tests PASS
 
-- [ ] **Step 4: Verify unit tests still work without the tag**
+- [x] **Step 4: Verify unit tests still work without the tag**
 
 Run: `go test -v ./...`
 Expected: 24 unit tests PASS, integration tests not included
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add integration_test.go
@@ -294,13 +294,13 @@ git commit -m "test: add Go integration tests with testcontainers-go"
 **Files:**
 - Delete: `integration/test.sh`
 
-- [ ] **Step 1: Delete test.sh**
+- [x] **Step 1: Delete test.sh**
 
 ```bash
 rm integration/test.sh
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add -A integration/test.sh
@@ -313,23 +313,23 @@ git commit -m "chore: remove shell-based integration tests (replaced by Go tests
 
 ### Task 8: Full verification
 
-- [ ] **Step 1: Run unit tests**
+- [x] **Step 1: Run unit tests**
 
 Run: `go test -v ./...`
 Expected: 24 unit tests PASS
 
-- [ ] **Step 2: Run integration tests**
+- [x] **Step 2: Run integration tests**
 
 Run: `go test -tags integration -v -timeout 120s .`
 Expected: All 6 integration tests PASS
 
-- [ ] **Step 3: Verify Docker layer caching works**
+- [x] **Step 3: Verify Docker layer caching works**
 
 Make a trivial change to any `.go` file (add a comment), then:
 Run: `cd integration && docker compose build`
 Expected: CoreDNS clone + deps layers are cached; only final build step re-runs. Should be much faster than a clean build.
 
-- [ ] **Step 4: Verify clean build works**
+- [x] **Step 4: Verify clean build works**
 
 Run: `cd integration && docker compose build --no-cache`
 Expected: Full build succeeds
