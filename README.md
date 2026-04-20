@@ -25,26 +25,62 @@ The plugin respects CoreDNS zone boundaries — it only answers queries that fal
 
 ## Compilation
 
-This package is compiled as part of CoreDNS, not standalone. Add the following to CoreDNS's [plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg):
+This plugin is compiled into CoreDNS — it is not a standalone binary.
 
-~~~
-unifi:github.com/jhogendorn/coredns-plugin-unifi
-~~~
+### Step-by-step build
 
-Put this early in the plugin list, so that *unifi* is executed before any of the other plugins.
+```sh
+# 1. Clone CoreDNS
+git clone --depth 1 --branch v1.11.3 https://github.com/coredns/coredns.git
+cd coredns
 
-Then compile CoreDNS as [detailed on coredns.io](https://coredns.io/2017/07/25/compile-time-enabling-or-disabling-plugins/#build-with-compile-time-configuration-file):
+# 2. Add the plugin — insert above the forward: line
+sed -i '/^forward:forward/a unifi:github.com/jhogendorn/coredns-plugin-unifi' plugin.cfg
 
-``` sh
-go generate
-go build
+# Or edit plugin.cfg manually; the entry should read:
+#   unifi:github.com/jhogendorn/coredns-plugin-unifi
+# placed immediately above:
+#   forward:forward
+
+# 3. Build
+go generate && go build -o coredns .
+
+# 4. Verify the plugin is included
+./coredns -plugins | grep unifi
 ```
 
-Or you can instead use make:
+Requires CoreDNS >= v1.11 and Go >= 1.24.
 
-``` sh
-make
+### Dockerfile example
+
+The following multi-stage Dockerfile builds a CoreDNS binary with this plugin included. It is optimised for layer caching — the CoreDNS clone and dependency steps are cached across plugin source changes.
+
+```dockerfile
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache git
+
+# Clone CoreDNS and inject plugin — these layers are stable
+RUN git clone --depth 1 --branch v1.11.3 https://github.com/coredns/coredns.git /coredns
+WORKDIR /coredns
+RUN sed -i '/^forward:forward/a unifi:github.com/jhogendorn/coredns-plugin-unifi' plugin.cfg
+
+# Copy plugin module files first for dependency caching
+COPY go.mod go.sum /plugin/
+RUN go generate && \
+    go get github.com/jhogendorn/coredns-plugin-unifi && \
+    go mod download
+
+# Now copy plugin source and build
+COPY *.go /plugin/
+RUN go mod tidy && go build -o coredns .
+
+FROM alpine:3.20
+COPY --from=builder /coredns/coredns /usr/local/bin/coredns
+EXPOSE 53 53/udp
+CMD ["coredns", "-conf", "/etc/coredns/Corefile"]
 ```
+
+> **Note:** This Dockerfile pulls the plugin from the module proxy (`github.com/jhogendorn/coredns-plugin-unifi`). For local development builds, see the integration harness in the `integration/` directory.
 
 ## Syntax
 
@@ -80,10 +116,15 @@ The `server` label indicates which server handled the request, see the *metrics*
 
 This plugin reports readiness to the ready plugin. It will be immediately ready.
 
+## UniFi Setup
+
+Create a read-only local admin in UniFi Network (Settings → Admins & Users) and use those credentials for `username` and `password`.
+
 ## Examples
 
-Put it in a block that serves the internal search domain space. If you have other resolving plugins
-for this domain it should fallthrough correctly.
+### Basic single-zone block
+
+Serve a single internal domain. Unresolved queries fall through to the next plugin.
 
 ~~~ corefile
 mylocal.tld {
@@ -95,6 +136,45 @@ mylocal.tld {
     ttl 30
     fallthrough
   }
+}
+~~~
+
+### Multi-site deployment
+
+Use the `sites` directive to limit which UniFi sites are queried. Useful when you have multiple physical sites but only want to expose clients from specific ones.
+
+~~~ corefile
+internal.corp {
+  unifi {
+    controllerurl http://unifi.internal:8443/
+    username svc_coredns
+    password mysecretpassword
+    refreshInterval 60
+    ttl 60
+    sites default,branch-office
+    fallthrough
+  }
+}
+~~~
+
+### Fallthrough chain: unifi → hosts → forward
+
+Unifi handles dynamic DHCP clients. A `hosts` block allows static overrides (e.g. the router itself). Everything else is forwarded to upstream DNS.
+
+~~~ corefile
+home.lan {
+  unifi {
+    controllerurl http://unifi.home:8443/
+    username svc_coredns
+    password mysecretpassword
+    ttl 30
+    fallthrough
+  }
+  hosts {
+    192.168.1.1 router.home.lan
+    fallthrough
+  }
+  forward . 1.1.1.1 8.8.8.8
 }
 ~~~
 
