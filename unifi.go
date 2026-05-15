@@ -26,8 +26,12 @@ const (
 
 var log = clog.NewWithPlugin("unifi")
 
+// UnifiConfigEntry holds all IPs published for a single DNS name. A
+// client can legitimately appear on multiple interfaces (wired + wifi)
+// under a single name -- we publish all of its IPs as A records and
+// let DNS-level round-robin / client preference sort it out.
 type UnifiConfigEntry struct {
-	a   net.IP
+	ips []net.IP
 	ttl uint32
 }
 
@@ -111,10 +115,12 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		case dns.TypeA:
 			result := u.getEntry(find)
 			if result != nil {
-				rr := new(dns.A)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: result.ttl}
-				rr.A = result.a
-				answers = append(answers, rr)
+				for _, ip := range result.ips {
+					rr := new(dns.A)
+					rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: result.ttl}
+					rr.A = ip
+					answers = append(answers, rr)
+				}
 			}
 		case dns.TypePTR:
 			result := u.getReverse(find)
@@ -289,12 +295,10 @@ func (u *Unifi) refresh(first bool) error {
 
 		record := name + "." + domain
 
-		if existing, ok := u.mappings[record]; ok && keepClients[record] {
-			log.Errorf("Hostname collision: %s already mapped to %s, ignoring duplicate %s", record, existing.a, client.IP)
+		ip := net.ParseIP(client.IP)
+		if ip == nil {
 			continue
 		}
-
-		ip := net.ParseIP(client.IP)
 
 		// Log sanitization on first occurrence only
 		raw := client.Name
@@ -306,21 +310,36 @@ func (u *Unifi) refresh(first bool) error {
 			u.seenSanitized[raw] = true
 		}
 
-		// Log new or changed mappings
+		// Append this client's IP to the record's IP set, deduping
+		// against any already-collected IPs (the controller occasionally
+		// surfaces the same lease twice; we want each IP listed once).
 		existing := u.mappings[record]
-		if existing == nil || !existing.a.Equal(ip) {
+		if existing == nil {
+			u.mappings[record] = &UnifiConfigEntry{
+				ips: []net.IP{ip},
+				ttl: u.Config.ttl,
+			}
 			log.Debugf("Mapped %s -> %s", record, client.IP)
-		}
-
-		u.mappings[record] = &UnifiConfigEntry{
-			a:   ip,
-			ttl: u.Config.ttl,
+		} else {
+			alreadyHave := false
+			for _, have := range existing.ips {
+				if have.Equal(ip) {
+					alreadyHave = true
+					break
+				}
+			}
+			if !alreadyHave {
+				existing.ips = append(existing.ips, ip)
+				log.Debugf("Mapped %s -> %s (additional IP, %d total)", record, client.IP, len(existing.ips))
+			}
 		}
 		keepClients[record] = true
 
-		// Reverse mapping: only for IPv4 addresses we could parse. First
-		// (record, ip) tuple wins on collision -- mirrors forward-map
-		// dedup intent above.
+		// Reverse mapping: every IP gets its own PTR pointing back to
+		// the record. Multiple IPs -> multiple reverse entries, all
+		// resolving to the same FQDN. A reverse-mapping collision (same
+		// IP, different FQDN) is the only truly anomalous case and is
+		// still logged.
 		if rev := reverseFromIP(ip); rev != "" {
 			if existingRev, ok := u.reverseMappings[rev]; ok && keepReverse[rev] && existingRev.fqdn != record {
 				log.Errorf("Reverse-mapping collision: %s already mapped to %s, ignoring duplicate %s", rev, existingRev.fqdn, record)

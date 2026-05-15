@@ -23,7 +23,7 @@ func TestServeDNSHit(t *testing.T) {
 		Origins: []string{"lan."},
 		mappings: UnifiConfigEntryMap{
 			"myhost.lan": {
-				a:   net.ParseIP("192.168.1.100"),
+				ips: []net.IP{net.ParseIP("192.168.1.100")},
 				ttl: 30,
 			},
 		},
@@ -98,6 +98,67 @@ func TestServeDNSNonARecord(t *testing.T) {
 
 	// AAAA (and other non-A/PTR) queries should pass through to Next handler
 	_, _ = u.ServeDNS(ctx, rec, r)
+}
+
+func TestRefreshMergesMultipleIPsForSameName(t *testing.T) {
+	// Single host on both wired and wireless surfaces as two clients
+	// with the same name and different IPs. Both should be merged into
+	// one record with two A values.
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "laptop", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "laptop", IP: "192.168.1.11", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+	u := newTestUnifi(mock)
+	if err := u.refresh(true); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+	entry := u.mappings["laptop.home.lan"]
+	if entry == nil {
+		t.Fatal("Expected mapping for laptop.home.lan")
+	}
+	if len(entry.ips) != 2 {
+		t.Fatalf("Expected 2 IPs, got %d", len(entry.ips))
+	}
+	for _, expectedRev := range []string{"10.1.168.192.in-addr.arpa", "11.1.168.192.in-addr.arpa"} {
+		rev := u.reverseMappings[expectedRev]
+		if rev == nil || rev.fqdn != "laptop.home.lan" {
+			t.Fatalf("Expected reverse %s -> laptop.home.lan; got %#v", expectedRev, rev)
+		}
+	}
+}
+
+func TestServeDNSMultiARecord(t *testing.T) {
+	u := &Unifi{
+		Next:    test.ErrorHandler(),
+		Config:  &UnifiConfig{ttl: 30},
+		Origins: []string{"lan."},
+		mappings: UnifiConfigEntryMap{
+			"laptop.lan": {
+				ips: []net.IP{net.ParseIP("192.168.1.10"), net.ParseIP("192.168.1.11")},
+				ttl: 30,
+			},
+		},
+	}
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("laptop.lan.", dns.TypeA)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+	code, err := u.ServeDNS(ctx, rec, r)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if code != dns.RcodeSuccess {
+		t.Fatalf("Expected rcode %d, got %d", dns.RcodeSuccess, code)
+	}
+	if len(rec.Msg.Answer) != 2 {
+		t.Fatalf("Expected 2 A records, got %d", len(rec.Msg.Answer))
+	}
 }
 
 func TestServeDNSPTRHit(t *testing.T) {
@@ -227,7 +288,7 @@ func TestGetEntry(t *testing.T) {
 	u := &Unifi{
 		mappings: UnifiConfigEntryMap{
 			"test.lan": {
-				a:   net.ParseIP("10.0.0.1"),
+				ips: []net.IP{net.ParseIP("10.0.0.1")},
 				ttl: 60,
 			},
 		},
@@ -237,8 +298,8 @@ func TestGetEntry(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Expected entry, got nil")
 	}
-	if !entry.a.Equal(net.ParseIP("10.0.0.1")) {
-		t.Fatalf("Expected 10.0.0.1, got %s", entry.a)
+	if !entry.ips[0].Equal(net.ParseIP("10.0.0.1")) {
+		t.Fatalf("Expected 10.0.0.1, got %s", entry.ips[0])
 	}
 
 	entry = u.getEntry("missing.lan")
@@ -296,8 +357,8 @@ func TestRefreshBuildsMapping(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Expected mapping for desktop.home.lan")
 	}
-	if !entry.a.Equal(net.ParseIP("192.168.1.10")) {
-		t.Fatalf("Expected 192.168.1.10, got %s", entry.a)
+	if !entry.ips[0].Equal(net.ParseIP("192.168.1.10")) {
+		t.Fatalf("Expected 192.168.1.10, got %s", entry.ips[0])
 	}
 	if entry.ttl != 30 {
 		t.Fatalf("Expected ttl 30, got %d", entry.ttl)
@@ -646,8 +707,8 @@ func TestRefreshCollisionKeepsFirst(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Expected mapping for printer.home.lan")
 	}
-	if !entry.a.Equal(net.ParseIP("192.168.1.10")) {
-		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.a)
+	if !entry.ips[0].Equal(net.ParseIP("192.168.1.10")) {
+		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.ips[0])
 	}
 }
 
@@ -674,8 +735,8 @@ func TestRefreshCollisionViaSanitization(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Expected mapping for my-printer.home.lan")
 	}
-	if !entry.a.Equal(net.ParseIP("192.168.1.10")) {
-		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.a)
+	if !entry.ips[0].Equal(net.ParseIP("192.168.1.10")) {
+		t.Fatalf("Expected first IP 192.168.1.10, got %s", entry.ips[0])
 	}
 }
 
@@ -834,7 +895,7 @@ func TestServeDNSZoneMatch(t *testing.T) {
 		Origins: []string{"lan."},
 		mappings: UnifiConfigEntryMap{
 			"myhost.lan": {
-				a:   net.ParseIP("192.168.1.100"),
+				ips: []net.IP{net.ParseIP("192.168.1.100")},
 				ttl: 30,
 			},
 		},
@@ -873,7 +934,7 @@ func TestServeDNSZoneNoMatch(t *testing.T) {
 		Origins: []string{"lan."},
 		mappings: UnifiConfigEntryMap{
 			"myhost.lan": {
-				a:   net.ParseIP("192.168.1.100"),
+				ips: []net.IP{net.ParseIP("192.168.1.100")},
 				ttl: 30,
 			},
 		},
