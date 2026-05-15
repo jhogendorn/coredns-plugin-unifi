@@ -58,3 +58,13 @@ unifi {
   fallthrough
 }
 ```
+
+## Integration Test Architecture
+
+- `integration_test.go` uses testcontainers-go compose module; `TestMain` starts the compose stack, gets the mapped DNS port, waits for initial refresh, runs tests, tears down.
+- Queries use the `miekg/dns` client for assertions.
+- Mock controller (`integration/mock-controller/`) has its own `go.mod` and imports unpoller/unifi types (`Client`, `Network`, `Site`, `ServerStatus`) + API path constants to return deterministic data for 5 clients across 2 networks.
+- Dockerfiles copy `go.mod`/`go.sum` and run `go mod download` before source — only the final build step re-runs on code changes. Base: `golang:1.24-alpine`.
+- Covered cases: named clients resolve, hostname fallback when Name empty, multi-network domain (`iot.lan`), unknown client → NXDOMAIN, nonexistent host → NXDOMAIN, case-insensitive lookup.
+- **Gotcha**: unpoller's `GetClients` fills `Hostname` from the MAC address when both `Name` and `Hostname` are empty, so the "nameless client" test fixture still receives a hostname (its MAC) rather than being empty.
+
