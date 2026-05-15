@@ -96,8 +96,131 @@ func TestServeDNSNonARecord(t *testing.T) {
 	r.SetQuestion("myhost.lan.", dns.TypeAAAA)
 	rec := dnstest.NewRecorder(&test.ResponseWriter{})
 
-	// Non-A queries should pass through to Next handler
+	// AAAA (and other non-A/PTR) queries should pass through to Next handler
 	_, _ = u.ServeDNS(ctx, rec, r)
+}
+
+func TestServeDNSPTRHit(t *testing.T) {
+	u := &Unifi{
+		Next: test.ErrorHandler(),
+		Config: &UnifiConfig{
+			ttl: 30,
+		},
+		Origins: []string{"1.168.192.in-addr.arpa."},
+		reverseMappings: UnifiReverseMap{
+			"100.1.168.192.in-addr.arpa": {
+				fqdn: "myhost.lan",
+				ttl:  30,
+			},
+		},
+	}
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("100.1.168.192.in-addr.arpa.", dns.TypePTR)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	code, err := u.ServeDNS(ctx, rec, r)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if code != dns.RcodeSuccess {
+		t.Fatalf("Expected rcode %d, got %d", dns.RcodeSuccess, code)
+	}
+	if len(rec.Msg.Answer) != 1 {
+		t.Fatalf("Expected 1 answer, got %d", len(rec.Msg.Answer))
+	}
+	ptr, ok := rec.Msg.Answer[0].(*dns.PTR)
+	if !ok {
+		t.Fatal("Expected PTR record in answer")
+	}
+	if ptr.Ptr != "myhost.lan." {
+		t.Fatalf("Expected myhost.lan., got %s", ptr.Ptr)
+	}
+}
+
+func TestServeDNSPTRMiss(t *testing.T) {
+	u := &Unifi{
+		Next: test.ErrorHandler(),
+		Config: &UnifiConfig{
+			ttl: 30,
+		},
+		Origins:         []string{"1.168.192.in-addr.arpa."},
+		reverseMappings: make(UnifiReverseMap),
+	}
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("99.1.168.192.in-addr.arpa.", dns.TypePTR)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	code, err := u.ServeDNS(ctx, rec, r)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if code != dns.RcodeSuccess {
+		t.Fatalf("Expected rcode %d, got %d", dns.RcodeSuccess, code)
+	}
+	if rec.Msg.Rcode != dns.RcodeNameError {
+		t.Fatalf("Expected NXDOMAIN, got rcode %d", rec.Msg.Rcode)
+	}
+}
+
+func TestServeDNSPTROutsideOrigins(t *testing.T) {
+	// PTR query for a zone not in Origins must pass through, not get hijacked.
+	u := &Unifi{
+		Next:    test.ErrorHandler(),
+		Config:  &UnifiConfig{ttl: 30},
+		Origins: []string{"lan."}, // forward zone only, no reverse zone listed
+		reverseMappings: UnifiReverseMap{
+			"100.1.168.192.in-addr.arpa": {fqdn: "myhost.lan", ttl: 30},
+		},
+	}
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("100.1.168.192.in-addr.arpa.", dns.TypePTR)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	// Origins doesn't cover in-addr.arpa -> pass through; ErrorHandler
+	// returns RcodeServerFailure, which is the marker we use here.
+	_, _ = u.ServeDNS(ctx, rec, r)
+}
+
+func TestGetReverse(t *testing.T) {
+	u := &Unifi{
+		reverseMappings: UnifiReverseMap{
+			"1.0.0.10.in-addr.arpa": {fqdn: "host.lan", ttl: 60},
+		},
+	}
+
+	entry := u.getReverse("1.0.0.10.in-addr.arpa")
+	if entry == nil {
+		t.Fatal("Expected entry, got nil")
+	}
+	if entry.fqdn != "host.lan" {
+		t.Fatalf("Expected host.lan, got %s", entry.fqdn)
+	}
+
+	if u.getReverse("99.0.0.10.in-addr.arpa") != nil {
+		t.Fatal("Expected nil for missing reverse entry")
+	}
+}
+
+func TestReverseFromIP(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"192.168.1.5", "5.1.168.192.in-addr.arpa"},
+		{"10.0.0.1", "1.0.0.10.in-addr.arpa"},
+		{"::1", ""}, // IPv6 not supported -> empty
+	} {
+		got := reverseFromIP(net.ParseIP(tc.in))
+		if got != tc.want {
+			t.Fatalf("reverseFromIP(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }
 
 func TestGetEntry(t *testing.T) {
@@ -140,10 +263,11 @@ func TestReady(t *testing.T) {
 
 func newTestUnifi(mock *mockUnifiAPI) *Unifi {
 	return &Unifi{
-		Config:        &UnifiConfig{ttl: 30},
-		Client:        &UnifiClient{api: mock},
-		mappings:      make(UnifiConfigEntryMap),
-		seenSanitized: make(map[string]bool),
+		Config:          &UnifiConfig{ttl: 30},
+		Client:          &UnifiClient{api: mock},
+		mappings:        make(UnifiConfigEntryMap),
+		reverseMappings: make(UnifiReverseMap),
+		seenSanitized:   make(map[string]bool),
 	}
 }
 
@@ -182,6 +306,52 @@ func TestRefreshBuildsMapping(t *testing.T) {
 	entry = u.mappings["laptop.home.lan"]
 	if entry == nil {
 		t.Fatal("Expected mapping for laptop.home.lan")
+	}
+
+	// Reverse map should mirror forward map.
+	if len(u.reverseMappings) != 2 {
+		t.Fatalf("Expected 2 reverse mappings, got %d", len(u.reverseMappings))
+	}
+	rev := u.reverseMappings["10.1.168.192.in-addr.arpa"]
+	if rev == nil {
+		t.Fatal("Expected reverse mapping for 192.168.1.10")
+	}
+	if rev.fqdn != "desktop.home.lan" {
+		t.Fatalf("Expected reverse fqdn desktop.home.lan, got %s", rev.fqdn)
+	}
+}
+
+func TestRefreshRemovesStaleReverseEntries(t *testing.T) {
+	mock := &mockUnifiAPI{
+		sites: []*unpoller_unifi.Site{{Name: "default"}},
+		clients: []*unpoller_unifi.Client{
+			{Name: "desktop", IP: "192.168.1.10", NetworkID: "net1"},
+			{Name: "laptop", IP: "192.168.1.11", NetworkID: "net1"},
+		},
+		networks: []unpoller_unifi.Network{
+			{ID: "net1", DomainName: "home.lan"},
+		},
+	}
+
+	u := newTestUnifi(mock)
+	_ = u.refresh(true)
+	if len(u.reverseMappings) != 2 {
+		t.Fatalf("Expected 2 reverse mappings after initial refresh, got %d", len(u.reverseMappings))
+	}
+
+	// Second refresh -- laptop gone
+	mock.clients = []*unpoller_unifi.Client{
+		{Name: "desktop", IP: "192.168.1.10", NetworkID: "net1"},
+	}
+	if err := u.refresh(false); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+
+	if len(u.reverseMappings) != 1 {
+		t.Fatalf("Expected 1 reverse mapping after stale removal, got %d", len(u.reverseMappings))
+	}
+	if u.reverseMappings["11.1.168.192.in-addr.arpa"] != nil {
+		t.Fatal("Expected laptop reverse to be removed")
 	}
 }
 

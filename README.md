@@ -17,11 +17,11 @@ the [CoreDNS Traefik](https://github.com/scottt732/coredns-traefik/) Plugin.
 
 ## How It Works
 
-The plugin periodically fetches sites, clients, and networks from the UniFi controller. For each DHCP client, it builds a DNS A record by combining the client's name with its network's domain name (e.g. `desktop.home.lan`).
+The plugin periodically fetches sites, clients, and networks from the UniFi controller. For each DHCP client, it builds a DNS A record by combining the client's name with its network's domain name (e.g. `desktop.home.lan`), and a matching PTR record in the corresponding `in-addr.arpa` zone (IPv4 only).
 
-Client names are sanitized to be DNS-safe: lowercased, spaces and underscores replaced with hyphens, invalid characters stripped. The plugin prefers the UI-assigned **Name** (alias) over the DHCP-reported **Hostname**. Clients with no name or hostname, or on networks with no domain name, are skipped. Hostname collisions (two clients mapping to the same record) are detected and logged.
+Client names are sanitized to be DNS-safe: lowercased, spaces and underscores replaced with hyphens, invalid characters stripped. The plugin prefers the UI-assigned **Name** (alias) over the DHCP-reported **Hostname**. Clients with no name or hostname, or on networks with no domain name, are skipped. Hostname collisions (two clients mapping to the same record) are detected and logged. Reverse-mapping collisions (two clients on the same IP) are likewise logged.
 
-The plugin respects CoreDNS zone boundaries — it only answers queries that fall within the zones configured in the server block.
+The plugin respects CoreDNS zone boundaries — it only answers queries that fall within the zones configured in the server block. To serve PTR records you must include the relevant reverse zone (e.g. `1.168.192.in-addr.arpa.`) in the server block alongside the forward zone.
 
 ## Compilation
 
@@ -175,6 +175,22 @@ home.lan {
     fallthrough
   }
   forward . 1.1.1.1 8.8.8.8
+}
+~~~
+
+### Forward + reverse (PTR) on a /24
+
+Include the matching `in-addr.arpa.` zone in the server block to enable PTR responses for the same DHCP clients.
+
+~~~ corefile
+home.lan 1.168.192.in-addr.arpa. {
+  unifi {
+    controllerurl http://unifi.home:8443/
+    username svc_coredns
+    password mysecretpassword
+    ttl 30
+    fallthrough
+  }
 }
 ~~~
 

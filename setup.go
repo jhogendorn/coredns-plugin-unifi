@@ -22,10 +22,11 @@ func setup(c *caddy.Controller) error {
 	}
 
 	u := &Unifi{
-		Config:   cfg,
-		Origins:  origins,
-		mappings: make(UnifiConfigEntryMap),
-		done:     make(chan struct{}),
+		Config:          cfg,
+		Origins:         origins,
+		mappings:        make(UnifiConfigEntryMap),
+		reverseMappings: make(UnifiReverseMap),
+		done:            make(chan struct{}),
 	}
 
 	for c.NextBlock() {

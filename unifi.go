@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,32 @@ type UnifiConfigEntry struct {
 
 type UnifiConfigEntryMap map[string]*UnifiConfigEntry
 
+// UnifiReverseEntry is the reverse-lookup answer: the FQDN that owns an IP,
+// plus the TTL to publish for the PTR. Stored in UnifiReverseMap keyed by the
+// IP's in-addr.arpa name (e.g. "5.1.168.192.in-addr.arpa").
+type UnifiReverseEntry struct {
+	fqdn string
+	ttl  uint32
+}
+
+type UnifiReverseMap map[string]*UnifiReverseEntry
+
+// reverseFromIP returns the IPv4 in-addr.arpa name for an IP (no trailing
+// dot). Returns "" for non-IPv4 addresses.
+func reverseFromIP(ip net.IP) string {
+	v4 := ip.To4()
+	if v4 == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		strconv.Itoa(int(v4[3])),
+		strconv.Itoa(int(v4[2])),
+		strconv.Itoa(int(v4[1])),
+		strconv.Itoa(int(v4[0])),
+		"in-addr.arpa",
+	}, ".")
+}
+
 type UnifiConfig struct {
 	controllerUrl   string
 	username        string
@@ -47,11 +74,12 @@ type Unifi struct {
 	Client  *UnifiClient
 	Origins []string
 
-	mappings      UnifiConfigEntryMap
-	seenSanitized map[string]bool // tracks raw->sanitized mappings we've already logged
-	mutex         sync.RWMutex
-	fall          fall.F
-	done          chan struct{}
+	mappings        UnifiConfigEntryMap
+	reverseMappings UnifiReverseMap // IP-in-addr.arpa -> FQDN. Built alongside mappings.
+	seenSanitized   map[string]bool // tracks raw->sanitized mappings we've already logged
+	mutex           sync.RWMutex
+	fall            fall.F
+	done            chan struct{}
 }
 
 func (u *Unifi) Name() string { return "unifi" }
@@ -60,7 +88,10 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 
 	state := request.Request{W: w, Req: r}
 
-	if state.QClass() != dns.ClassINET || state.QType() != dns.TypeA {
+	if state.QClass() != dns.ClassINET {
+		return plugin.NextOrFailure(u.Name(), u.Next, ctx, w, r)
+	}
+	if state.QType() != dns.TypeA && state.QType() != dns.TypePTR {
 		return plugin.NextOrFailure(u.Name(), u.Next, ctx, w, r)
 	}
 
@@ -76,12 +107,23 @@ func (u *Unifi) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	for _, q := range state.Req.Question {
 		find := strings.ToLower(q.Name[:len(q.Name)-1])
 
-		result := u.getEntry(find)
-		if result != nil {
-			rr := new(dns.A)
-			rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: result.ttl}
-			rr.A = result.a
-			answers = append(answers, rr)
+		switch q.Qtype {
+		case dns.TypeA:
+			result := u.getEntry(find)
+			if result != nil {
+				rr := new(dns.A)
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: result.ttl}
+				rr.A = result.a
+				answers = append(answers, rr)
+			}
+		case dns.TypePTR:
+			result := u.getReverse(find)
+			if result != nil {
+				rr := new(dns.PTR)
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: result.ttl}
+				rr.Ptr = dns.Fqdn(result.fqdn)
+				answers = append(answers, rr)
+			}
 		}
 	}
 
@@ -139,6 +181,18 @@ func (u *Unifi) getEntry(host string) *UnifiConfigEntry {
 	defer u.mutex.RUnlock()
 
 	value, found := u.mappings[host]
+	if !found {
+		return nil
+	}
+
+	return value
+}
+
+func (u *Unifi) getReverse(name string) *UnifiReverseEntry {
+	u.mutex.RLock()
+	defer u.mutex.RUnlock()
+
+	value, found := u.reverseMappings[name]
 	if !found {
 		return nil
 	}
@@ -214,8 +268,12 @@ func (u *Unifi) refresh(first bool) error {
 	if u.seenSanitized == nil {
 		u.seenSanitized = make(map[string]bool)
 	}
+	if u.reverseMappings == nil {
+		u.reverseMappings = make(UnifiReverseMap)
+	}
 
 	keepClients := map[string]bool{}
+	keepReverse := map[string]bool{}
 	for _, client := range clients {
 		name := clientName(client.Name, client.Hostname)
 		if name == "" {
@@ -259,12 +317,32 @@ func (u *Unifi) refresh(first bool) error {
 			ttl: u.Config.ttl,
 		}
 		keepClients[record] = true
+
+		// Reverse mapping: only for IPv4 addresses we could parse. First
+		// (record, ip) tuple wins on collision -- mirrors forward-map
+		// dedup intent above.
+		if rev := reverseFromIP(ip); rev != "" {
+			if existingRev, ok := u.reverseMappings[rev]; ok && keepReverse[rev] && existingRev.fqdn != record {
+				log.Errorf("Reverse-mapping collision: %s already mapped to %s, ignoring duplicate %s", rev, existingRev.fqdn, record)
+			} else {
+				u.reverseMappings[rev] = &UnifiReverseEntry{
+					fqdn: record,
+					ttl:  u.Config.ttl,
+				}
+				keepReverse[rev] = true
+			}
+		}
 	}
 
 	// Delete old mappings
 	for key := range u.mappings {
 		if !keepClients[key] {
 			delete(u.mappings, key)
+		}
+	}
+	for key := range u.reverseMappings {
+		if !keepReverse[key] {
+			delete(u.reverseMappings, key)
 		}
 	}
 
